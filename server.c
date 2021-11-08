@@ -13,12 +13,13 @@
 #include <pthread.h>
 #include <poll.h>
 #include <ctype.h>
-#include <string.h>
 
 #define MAX_WAITING_CONNECTIONS 5
 #define CONNECTION_TIMEOUT 10
 #define MAX_DATA_SIZE 10000
-#define MAX_LINE_SIZE 100
+#define OK_RESPONSE "HTTP/1.1 200 OK\n\n"
+#define FILE_NOT_FOUND_RESPONSE "HTTP/1.1 404 Not Found\n\n"
+#define METHOD_NOT_FOUND_RESPONSE "HTTP/1.1 405 Method Not Allowed\n\n"
 
 int getValidDescriptor(struct addrinfo *results){
     int socketDescriptor;
@@ -98,8 +99,52 @@ int acceptConnections(int socketDescriptor){
     return connectionDescriptor;
 }
 
-void handleHTTPRequest(char* request){
+char* readFile(char* filePath){
+    FILE * fPtr;
+    char ch;
+    char* content  = malloc(sizeof(char) * MAX_DATA_SIZE);
+    fPtr = fopen(filePath, "r");
+    if(fPtr == NULL) return "-1";
+    while(ch != EOF){
+        ch = fgetc(fPtr);
+        strncat(content,&ch,1);
+    }
+    fclose(fPtr);
+    return content;
+}
+
+void sendToClient(char* response,int connection){
+    if (send(connection,response,strlen(response),0) == -1){
+        printf("Can't send response to the client\n");
+        exit(1);
+    }
+}
+
+char* createGetResponse(char* filePath){
+    char *response = malloc(sizeof(char) * MAX_DATA_SIZE);
+    char * content = readFile(filePath);
+    if(strcmp(content,"-1") == 0) return FILE_NOT_FOUND_RESPONSE;
+    strcat(response,OK_RESPONSE);
+    strcat(response,content);
+    return response;
+}
+
+char* createPostResponse(){
+    return OK_RESPONSE;
+}
+
+void handleHTTPRequest(char* request,int connection){
     printf("request is \" %s \"\n",request);
+    char *method,*uri,*version;
+    method = strtok(request," ");
+    uri = strtok(NULL," ");
+    version = strtok(NULL,"\n");
+
+    if(method == NULL || uri==NULL || version == NULL) sendToClient(METHOD_NOT_FOUND_RESPONSE,connection);
+    else if (strcmp(method,"GET") == 0) sendToClient(createGetResponse(uri),connection);
+    else if (strcmp(method,"POST") == 0) sendToClient(createPostResponse(),connection);
+    else sendToClient (METHOD_NOT_FOUND_RESPONSE,connection);
+
 }
 
 int isEmptyLine(char *line){
@@ -148,7 +193,7 @@ void* handleConnection(void* connection){
         strcpy(tempCopy,buffer);
         emptyLines = numOfEmptyLines(tempCopy);
         if(emptyLines >= 1) {
-            handleHTTPRequest(buffer);
+            handleHTTPRequest(buffer,connectionDescriptor);
             emptyLines = 0;
             buffer[0] = '\0';
         }
@@ -164,7 +209,7 @@ int main(int argc, char **argv){
     //     exit(1);
     // }
     // char *PORT_NUM = argv[1];
-    char *PORT_NUM = "5050";
+    char *PORT_NUM = "5051";
     struct addrinfo *info = getServerInfo(PORT_NUM);
     int socketDescriptor = createSocket(info);
     freeaddrinfo(info);
