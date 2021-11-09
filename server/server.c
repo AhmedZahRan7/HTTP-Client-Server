@@ -15,8 +15,9 @@
 #include <ctype.h>
 
 #define MAX_WAITING_CONNECTIONS 5
-#define CONNECTION_TIMEOUT 10
-#define MAX_DATA_SIZE 10000
+#define CONNECTION_TIMEOUT 5
+#define MAX_DATA_SIZE 1000
+#define MAX_FILE_SIZE 10000000
 #define OK_RESPONSE "HTTP/1.1 200 OK\n\n"
 #define FILE_NOT_FOUND_RESPONSE "HTTP/1.1 404 Not Found\n\n"
 #define METHOD_NOT_FOUND_RESPONSE "HTTP/1.1 405 Method Not Allowed\n\n"
@@ -61,7 +62,6 @@ int createSocket(struct addrinfo* results){
         close(descriptor);
         descriptor = getValidDescriptor(results);
     }
-
     return descriptor;
 }
 
@@ -71,11 +71,6 @@ void listenOnSocket(int descriptor){
         exit(1);
     }
 }
-// void bindTheSocket(){
-//     if (setsockopt(socketDescriptor, SOL_SOCKET, SO_REUSEADDR, &yes,sizeof(int)) == -1) {
-//         perror("setsockopt");
-//         exit(1);
-// }
 
 // void* to return a pointer [like T]
 void* castToRightSocketAddress(struct sockaddr *address){
@@ -100,32 +95,51 @@ int acceptConnections(int socketDescriptor){
 }
 
 char* readFile(char* filePath){
-    FILE * fPtr;
+    FILE *fPtr = fopen(filePath, "r");
+    if(fPtr == NULL) {
+        printf("file not exist %s\n",filePath);
+        return "-1";
+    }
+
+    fseek(fPtr, 0, SEEK_END);
+    int fileLen = ftell(fPtr);
+    rewind(fPtr);
+    fseek(fPtr, 0, SEEK_SET);
+
     char ch;
-    char* content  = malloc(sizeof(char) * MAX_DATA_SIZE);
-    fPtr = fopen(filePath, "r");
-    if(fPtr == NULL) return "-1";
-    while(ch != EOF){
-        ch = fgetc(fPtr);
-        strncat(content,&ch,1);
+    char* content  = (char*)malloc(sizeof(char) * MAX_FILE_SIZE);
+    fread(&ch,1,1,fPtr);
+    int written = 0;
+    while(!feof(fPtr)){
+        memcpy(content+written,&ch,1);
+        fread(&ch,1,1,fPtr);
+        written++;
     }
     fclose(fPtr);
     return content;
 }
 
 void sendToClient(char* response,int connection){
-    if (send(connection,response,strlen(response),0) == -1){
-        printf("Can't send response to the client\n");
-        exit(1);
+    int len = strlen(response);
+    int sent = 0;
+    int left = len;
+    while (sent<len){
+        int n = send(connection,response+sent,left,0);
+        if (n == -1) break;
+        sent += n;
+        left -= n;
     }
 }
 
 char* createGetResponse(char* filePath){
-    char *response = malloc(sizeof(char) * MAX_DATA_SIZE);
+    char *response = (char*)malloc(sizeof(char) * MAX_FILE_SIZE);
     char * content = readFile(filePath);
-    if(strcmp(content,"-1") == 0) return FILE_NOT_FOUND_RESPONSE;
-    strcat(response,OK_RESPONSE);
-    strcat(response,content);
+    if(strcmp(content,"-1") == 0) strcat(response,FILE_NOT_FOUND_RESPONSE);
+    else{
+        strcat(response,OK_RESPONSE);
+        strcat(response,content);
+        free(content);
+    }
     return response;
 }
 
@@ -140,11 +154,21 @@ void handleHTTPRequest(char* request,int connection){
     uri = strtok(NULL," ");
     version = strtok(NULL,"\n");
 
-    if(method == NULL || uri==NULL || version == NULL) sendToClient(METHOD_NOT_FOUND_RESPONSE,connection);
-    else if (strcmp(method,"GET") == 0) sendToClient(createGetResponse(uri),connection);
+    if(method == NULL || uri==NULL || version == NULL) {
+        sendToClient(METHOD_NOT_FOUND_RESPONSE,connection);
+        return;
+    }
+
+    char baseURI[200] = "./welcome";
+    strcat(baseURI,uri);
+    if (strcmp(baseURI,"./welcome/") == 0) strcat(baseURI,"index.html");  
+    if (strcmp(method,"GET") == 0 || strcmp(method+1,"GET") == 0 ) {
+        char* response = createGetResponse(baseURI);
+        sendToClient(response,connection);
+        free(response);
+    }
     else if (strcmp(method,"POST") == 0) sendToClient(createPostResponse(),connection);
     else sendToClient (METHOD_NOT_FOUND_RESPONSE,connection);
-
 }
 
 int isEmptyLine(char *line){
@@ -167,7 +191,7 @@ int numOfEmptyLines(char *buffer){
 void* handleConnection(void* connection){
     int connectionDescriptor = *(int*)connection;
     printf("handeling connection %d\n",connectionDescriptor);
-    char buffer[MAX_DATA_SIZE];
+    char* buffer = (char*) malloc(sizeof(char) * MAX_DATA_SIZE);
     int emptyLines = 0;
     //list of sockets to monitor events [only one socket in our case] 
     struct pollfd socketMonitor[1];
@@ -179,8 +203,11 @@ void* handleConnection(void* connection){
         int numOfEvents = poll(socketMonitor,1, CONNECTION_TIMEOUT*1000);
         if(numOfEvents == 0) break; // no more IN events happend during the timeout interval
         
-        char tempBuffer[MAX_DATA_SIZE];
-        int receivedBytes = recv(connectionDescriptor,tempBuffer,MAX_DATA_SIZE-1,0);
+        char *tempBuffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
+        int receivedBytes = recv(connectionDescriptor,tempBuffer,MAX_DATA_SIZE,0);
+
+        printf("%s",tempBuffer);
+
         if(receivedBytes == 0) break; // the client closed the connection
         if(receivedBytes == -1){
             printf("Error when receiving from the client\n");
@@ -189,7 +216,7 @@ void* handleConnection(void* connection){
     
         tempBuffer[receivedBytes] = '\0'; //end of file
         strcat(buffer,tempBuffer);
-        char tempCopy[MAX_DATA_SIZE];
+        char *tempCopy = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
         strcpy(tempCopy,buffer);
         emptyLines = numOfEmptyLines(tempCopy);
         if(emptyLines >= 1) {
@@ -197,19 +224,21 @@ void* handleConnection(void* connection){
             emptyLines = 0;
             buffer[0] = '\0';
         }
+        free(tempBuffer);
+        free(tempCopy);
     }
+    free(buffer);
     printf("Connection %d timeout\n",connectionDescriptor);
     close(connectionDescriptor);
 }
 
 int main(int argc, char **argv){
     //Check the #arguments [it should be 2, 1st for the invocation command 2nd for port num]
-    // if(argc != 2){
-    //     printf("Invalid num of arguments\n");
-    //     exit(1);
-    // }
-    // char *PORT_NUM = argv[1];
-    char *PORT_NUM = "5051";
+    if(argc != 2){
+        printf("Invalid num of arguments\n");
+        exit(1);
+    }
+    char *PORT_NUM = argv[1];
     struct addrinfo *info = getServerInfo(PORT_NUM);
     int socketDescriptor = createSocket(info);
     freeaddrinfo(info);

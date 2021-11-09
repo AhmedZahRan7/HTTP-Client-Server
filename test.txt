@@ -1,3 +1,0 @@
-test the get
-method in http
-20000
