@@ -162,7 +162,7 @@ void handleHTTPRequest(char* request,int connection){
     char baseURI[200] = "./welcome";
     strcat(baseURI,uri);
     if (strcmp(baseURI,"./welcome/") == 0) strcat(baseURI,"index.html");  
-    if (strcmp(method,"GET") == 0 || strcmp(method+1,"GET") == 0 ) {
+    if (strcmp(method,"GET") == 0 ) {
         char* response = createGetResponse(baseURI);
         sendToClient(response,connection);
         free(response);
@@ -177,21 +177,26 @@ int isEmptyLine(char *line){
 }
 
 int numOfEmptyLines(char *buffer){
-    int emptyLines = 0;
+    int emptyLines = 0;\
+    int lines = 0;
     char * line;
     line = strtok (buffer,"\n");
     while (line != NULL) {
+        lines++;
         if(isEmptyLine(line)) emptyLines++;
         else emptyLines = 0;
         line = strtok (NULL, "\n");
     }
-    return emptyLines;
+
+    //return -1 if the whole buffer is empty 
+    return emptyLines==lines? -1 : emptyLines;
 }
 
 void* handleConnection(void* connection){
     int connectionDescriptor = *(int*)connection;
     printf("handeling connection %d\n",connectionDescriptor);
     char* buffer = (char*) malloc(sizeof(char) * MAX_DATA_SIZE);
+    buffer[0] = '\0';
     int emptyLines = 0;
     //list of sockets to monitor events [only one socket in our case] 
     struct pollfd socketMonitor[1];
@@ -202,23 +207,19 @@ void* handleConnection(void* connection){
         // poll if the socket had new event to handle or not.
         int numOfEvents = poll(socketMonitor,1, CONNECTION_TIMEOUT*1000);
         if(numOfEvents == 0) break; // no more IN events happend during the timeout interval
-        
         char *tempBuffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
         int receivedBytes = recv(connectionDescriptor,tempBuffer,MAX_DATA_SIZE,0);
-
-        printf("%s",tempBuffer);
-
         if(receivedBytes == 0) break; // the client closed the connection
         if(receivedBytes == -1){
             printf("Error when receiving from the client\n");
             exit(1);
         }
-    
         tempBuffer[receivedBytes] = '\0'; //end of file
-        strcat(buffer,tempBuffer);
+        strcat(buffer,tempBuffer);        
         char *tempCopy = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
         strcpy(tempCopy,buffer);
         emptyLines = numOfEmptyLines(tempCopy);
+        if(emptyLines == -1) buffer[0] = '\0';
         if(emptyLines >= 1) {
             handleHTTPRequest(buffer,connectionDescriptor);
             emptyLines = 0;
