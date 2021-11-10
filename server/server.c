@@ -15,7 +15,7 @@
 #include <ctype.h>
 
 #define MAX_WAITING_CONNECTIONS 5
-#define CONNECTION_TIMEOUT 20
+#define CONNECTION_TIMEOUT 5
 #define MAX_DATA_SIZE 1000
 #define MAX_FILE_SIZE 10000000
 #define OK_RESPONSE "HTTP/1.1 200 OK\n\n"
@@ -94,32 +94,7 @@ int acceptConnections(int socketDescriptor){
     return connectionDescriptor;
 }
 
-char* readFile(char* filePath){
-    FILE *fPtr = fopen(filePath, "r");
-    if(fPtr == NULL) {
-        printf("file not exist %s\n",filePath);
-        return "-1";
-    }
-
-    fseek(fPtr, 0, SEEK_END);
-    int fileLen = ftell(fPtr);
-    rewind(fPtr);
-    fseek(fPtr, 0, SEEK_SET);
-
-    char ch;
-    char* content  = (char*)malloc(sizeof(char) * MAX_FILE_SIZE);
-    fread(&ch,1,1,fPtr);
-    int written = 0;
-    while(!feof(fPtr)){
-        memcpy(content+written,&ch,1);
-        fread(&ch,1,1,fPtr);
-        written++;
-    }
-    fclose(fPtr);
-    return content;
-}
-
-void sendToClient(char* response,int connection){
+void sendStringToClient(char* response,int connection){
     int len = strlen(response);
     int sent = 0;
     int left = len;
@@ -131,20 +106,21 @@ void sendToClient(char* response,int connection){
     }
 }
 
-char* createGetResponse(char* filePath){
-    char *response = (char*)malloc(sizeof(char) * MAX_FILE_SIZE);
-    char * content = readFile(filePath);
-    if(strcmp(content,"-1") == 0) strcat(response,FILE_NOT_FOUND_RESPONSE);
-    else{
-        strcat(response,OK_RESPONSE);
-        strcat(response,content);
-        free(content);
+char* sendFileToClient(char* filePath,int connection){
+    FILE *fPtr = fopen(filePath, "rb");
+    if(fPtr == NULL) sendStringToClient(FILE_NOT_FOUND_RESPONSE,connection);
+    sendStringToClient(OK_RESPONSE,connection);
+    fseek(fPtr, 0, SEEK_END);
+    int fileLen = ftell(fPtr);
+    rewind(fPtr);
+    fseek(fPtr, 0, SEEK_SET);
+    int written = 0;
+    char ch;
+    while(written < fileLen){
+        fread(&ch,1,1,fPtr);
+        written += (send(connection,&ch,sizeof ch,0) != 0);
     }
-    return response;
-}
-
-char* createPostResponse(){
-    return OK_RESPONSE;
+    fclose(fPtr);
 }
 
 void handleHTTPRequest(char* request,int connection){
@@ -153,22 +129,16 @@ void handleHTTPRequest(char* request,int connection){
     method = strtok(request," ");
     uri = strtok(NULL," ");
     version = strtok(NULL,"\n");
-
     if(method == NULL || uri==NULL || version == NULL) {
-        sendToClient(METHOD_NOT_FOUND_RESPONSE,connection);
+        sendStringToClient(METHOD_NOT_FOUND_RESPONSE,connection);
         return;
     }
-
     char baseURI[200] = "./welcome";
     strcat(baseURI,uri);
     if (strcmp(baseURI,"./welcome/") == 0) strcat(baseURI,"index.html");  
-    if (strcmp(method,"GET") == 0 ) {
-        char* response = createGetResponse(baseURI);
-        sendToClient(response,connection);
-        free(response);
-    }
-    else if (strcmp(method,"POST") == 0) sendToClient(createPostResponse(),connection);
-    else sendToClient (METHOD_NOT_FOUND_RESPONSE,connection);
+    if (strcmp(method,"GET") == 0 ) sendFileToClient(baseURI,connection);
+    else if (strcmp(method,"POST") == 0) sendStringToClient(OK_RESPONSE,connection);
+    else sendStringToClient (METHOD_NOT_FOUND_RESPONSE,connection);
 }
 
 char* replace(char* s,char* old,char* new){

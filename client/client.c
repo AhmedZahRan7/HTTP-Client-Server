@@ -16,7 +16,7 @@
 
 #define MAX_LINE_SIZE 1000
 #define MAX_DATA_SIZE 100000
-#define CONNECTION_TIMEOUT 5
+#define CONNECTION_TIMEOUT 500
 // void* to return a pointer [like T]
 void* castToRightSocketAddress(struct sockaddr *address){
     if (address->sa_family == AF_INET) return &(((struct sockaddr_in*)address)->sin_addr);
@@ -28,7 +28,6 @@ struct addrinfo* getServerInfo(char* ip,char* port){
     memset(&socketInformation, 0, sizeof socketInformation);
     socketInformation.ai_family = AF_UNSPEC; //ipv4 or ipv6
     socketInformation.ai_socktype = SOCK_STREAM; //TCP
-    socketInformation.ai_flags = AI_PASSIVE; // use my IP
     
     struct addrinfo *result;
     if (getaddrinfo(ip, port, &socketInformation, &result) != 0) {
@@ -77,23 +76,29 @@ void sendToServer(int connection, char* msg){
 }
 
 
-void receieveResponse(int connection){
+void* receieveResponse(void* connection){
+    int connectionDescriptor = *(int*)connection;
     //list of sockets to monitor events [only one socket in our case] 
     struct pollfd socketMonitor[1];
-    socketMonitor[0].fd = connection;
-    socketMonitor[0].events = POLL_IN;
+    socketMonitor[0].fd = connectionDescriptor;
+    socketMonitor[0].events = POLLIN;
     while(1){
         // poll if the socket had new event to handle or not.
         int numOfEvents = poll(socketMonitor,1, CONNECTION_TIMEOUT*1000);
         if(numOfEvents == 0) break; // no more IN events happend during the timeout interval
         char *buffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
-        int receivedBytes = recv(connection,buffer,MAX_DATA_SIZE-1,0);
-        if(receivedBytes == 0) break; // the client closed the connection
+        buffer[0] = '\0';
+        int receivedBytes = recv(connectionDescriptor,buffer,MAX_DATA_SIZE-1,0);
+        if(receivedBytes == 0) {
+            printf("Server closed the connection\n");
+            exit(1);
+        } 
         if(receivedBytes == -1){
             printf("Error when receiving from the client\n");
             exit(1);
         }
-        printf("%s",buffer);
+        buffer[receivedBytes] = '\0';
+        printf("%s\n",buffer);
         free(buffer);
     }
 }
@@ -112,17 +117,14 @@ int main(int argc, char **argv){
     char *SERVER_PORT = argv[2];
     int connection = connectToServer(SERVER_IP,SERVER_PORT);
 
-    int emptyLines = 0;
+    pthread_t thread;
+    pthread_create(&thread, NULL, receieveResponse, (void *)(&connection));
+
     while(1){
         char *line = (char*)malloc(sizeof(char) * MAX_LINE_SIZE);
         size_t size = MAX_LINE_SIZE;
         if (getline(&line, &size, stdin) == -1 || strcmp(line,"close\n") == 0) break;
         sendToServer(connection,line);
-        emptyLines+=isEmptyLine(line);
-        if(emptyLines >= 2) {
-            receieveResponse(connection);
-            emptyLines = 0;
-        }
         free(line);
     }
     close(connection);
