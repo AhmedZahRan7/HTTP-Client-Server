@@ -15,7 +15,7 @@
 #include <ctype.h>
 
 #define MAX_WAITING_CONNECTIONS 5
-#define CONNECTION_TIMEOUT 5
+#define CONNECTION_TIMEOUT 20
 #define MAX_DATA_SIZE 1000
 #define MAX_FILE_SIZE 10000000
 #define OK_RESPONSE "HTTP/1.1 200 OK\n\n"
@@ -171,13 +171,42 @@ void handleHTTPRequest(char* request,int connection){
     else sendToClient (METHOD_NOT_FOUND_RESPONSE,connection);
 }
 
+char* replace(char* s,char* old,char* new){
+    /*https://www.geeksforgeeks.org/c-program-replace-word-text-another-given-word/*/
+    char* result;
+    int i, cnt = 0;
+    int newlen = strlen(new);
+    int oldlen = strlen(old);
+
+    for (i = 0; s[i] != '\0'; i++) {
+        if (strstr(&s[i], old) == &s[i]) {
+            cnt++;
+              i += oldlen - 1;
+        }
+    }
+    result = (char*)malloc(i + cnt * (newlen - oldlen) + 1);
+    i = 0;
+    while (*s) {
+        if (strstr(s, old) == s) {
+            strcpy(&result[i], new);
+            i += newlen;
+            s += oldlen;
+        }
+        else result[i++] = *s++;
+    }
+    result[i] = '\0';
+    return result;
+}
+
 int isEmptyLine(char *line){
+    if(strlen(line) == 0) return 1;
     for(int i=0;i<strlen(line);i++) if(!isspace(line[i])) return 0;
     return 1;
 }
 
-int numOfEmptyLines(char *buffer){
-    int emptyLines = 0;\
+int numOfEmptyLines(char *b){
+    char* buffer = replace(b,"\n"," \n");
+    int emptyLines = 0;
     int lines = 0;
     char * line;
     line = strtok (buffer,"\n");
@@ -201,7 +230,7 @@ void* handleConnection(void* connection){
     //list of sockets to monitor events [only one socket in our case] 
     struct pollfd socketMonitor[1];
     socketMonitor[0].fd = connectionDescriptor;
-    socketMonitor[0].events = POLL_IN;
+    socketMonitor[0].events = POLLIN;
 
     while(1){
         // poll if the socket had new event to handle or not.
