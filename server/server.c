@@ -15,12 +15,12 @@
 #include <ctype.h>
 
 #define MAX_WAITING_CONNECTIONS 5
-#define CONNECTION_TIMEOUT 5
+#define CONNECTION_TIMEOUT 1
 #define MAX_DATA_SIZE 1000
 #define MAX_FILE_SIZE 10000000
-#define OK_RESPONSE "HTTP/1.1 200 OK\n\n"
-#define FILE_NOT_FOUND_RESPONSE "HTTP/1.1 404 Not Found\n\n"
-#define METHOD_NOT_FOUND_RESPONSE "HTTP/1.1 405 Method Not Allowed\n\n"
+#define OK_RESPONSE "HTTP/1.1 200 OK\r\n\r\n"
+#define FILE_NOT_FOUND_RESPONSE "HTTP/1.1 404 Not Found\r\n\r\n"
+#define METHOD_NOT_FOUND_RESPONSE "HTTP/1.1 405 Method Not Allowed\r\n\r\n"
 
 int getValidDescriptor(struct addrinfo *results){
     int socketDescriptor;
@@ -106,7 +106,7 @@ void sendStringToClient(char* response,int connection){
     }
 }
 
-char* sendFileToClient(char* filePath,int connection){
+void sendFileToClient(char* filePath,int connection){
     FILE *fPtr = fopen(filePath, "rb");
     if(fPtr == NULL) sendStringToClient(FILE_NOT_FOUND_RESPONSE,connection);
     sendStringToClient(OK_RESPONSE,connection);
