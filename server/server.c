@@ -25,11 +25,11 @@
 #define BASE_DIR "./base_dir"
 #define DEFAULT_HTML "/index.html"
 #define MAX_TIME_OUT 10 //in seconds
-sem_t workingThreadsSemaphore;
-pthread_mutex_t openConnectionMutex = PTHREAD_MUTEX_INITIALIZER;
 
-int numOfOpenConnections = 0;
-double connectionTimeout = MAX_TIME_OUT;
+sem_t workingThreadsSemaphore; //semaphore that handles the maximum number of working threads [max connections I can handle atime]
+pthread_mutex_t openConnectionMutex = PTHREAD_MUTEX_INITIALIZER; //to thread-safely change numOfOpenConnections value
+int numOfOpenConnections = 0; //currently active connections
+double connectionTimeout = MAX_TIME_OUT; //timeout assigned for new connection and is based on the num of active connections
 
 void updateTimeOut(){
     connectionTimeout = numOfOpenConnections? MAX_TIME_OUT/numOfOpenConnections : MAX_TIME_OUT;
@@ -103,6 +103,7 @@ void* castToRightSocketAddress(struct sockaddr *address){
     return &(((struct sockaddr_in6*)address)->sin6_addr);
 }
 
+//to accept one of waiting connections on that socket
 int acceptConnections(int socketDescriptor){
     // large enough to hold both IPv4 and IPv6 structures.
     struct sockaddr_storage clientAddress; 
@@ -131,6 +132,7 @@ void sendStringToClient(char* response,int connection){
     }
 }
 
+//why sendfile() and sendstring() ? as the file may by binary so sending it as string will stop at first \0 charcater
 void sendFileToClient(char* filePath,int connection){
     FILE *fPtr = fopen(filePath, "rb");
     if(fPtr == NULL) {
@@ -151,6 +153,7 @@ void sendFileToClient(char* filePath,int connection){
     fclose(fPtr);
 }
 
+//recursuvely create directory
 void _mkdir(char *dir) {
     /*http://nion.modprobe.de/blog/archives/357-Recursive-directory-creation.html*/
     char tmp[256];
@@ -172,6 +175,7 @@ void writeToFile(char* filePath,char* content,int len){
     printf("len %d\n",len);
     _mkdir(filePath);
     FILE *fPtr = fopen(filePath, "wb");
+    //decapsulate the header
     char* begin = strstr(content,"\r\n\r\n");
     int headerLen = begin-content;
     for(int i=headerLen+4;i<len;i++) putc(content[i],fPtr);
@@ -196,7 +200,9 @@ void handleHTTPRequest(char* request,int len,int connection){
         return;
     }
 
+    //base directory is the start directory of our sever 
     char baseURI[200] = BASE_DIR;
+    //if the client not specified the file it needs so send it the default file
     if(strcmp(uri,"/") ==0) strcat(baseURI,DEFAULT_HTML);
     else strcat(baseURI,uri);
 
@@ -220,19 +226,17 @@ void* handleConnection(void* connection){
     socketMonitor[0].fd = connectionDescriptor;
     socketMonitor[0].events = POLLIN;
     int len = 0;
+    // why while not just recv()? as no guarantee that recv() get all data in one call
     while(1){
         // poll if the socket had new event to handle or not.
         int numOfEvents = poll(socketMonitor,1, connectionTimeout*1000);
         if(numOfEvents == 0) break; // no more IN events happend during the timeout interval
-        char *tempBuffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
-        int receivedBytes = recv(connectionDescriptor,tempBuffer,MAX_DATA_SIZE,0);
+        int receivedBytes = recv(connectionDescriptor,buffer+len,MAX_DATA_SIZE-len,0);
         if(receivedBytes == 0) break; // the client closed the connection
         if(receivedBytes == -1){
             printf("Error when receiving from the client\n");
             break;
         }
-        for(int i=0;i<receivedBytes;i++) buffer[len+i] = tempBuffer[i];
-        free(tempBuffer);
         len += receivedBytes;
         if(buffer[len-1] == '\n' && buffer[len-2] == '\r' && buffer[len-3] == '\n' && buffer[len-4] == '\r') break;
     }
@@ -240,8 +244,8 @@ void* handleConnection(void* connection){
     free(buffer);
     printf("Connection %d timeout\n",connectionDescriptor);
     close(connectionDescriptor);
-    sem_post(&workingThreadsSemaphore);
     decreaseConnections();
+    sem_post(&workingThreadsSemaphore);
 }
 
 int main(int argc, char **argv){
@@ -251,7 +255,6 @@ int main(int argc, char **argv){
         exit(1);
     }
     sem_init(&workingThreadsSemaphore,0,MAX_WORKING_THREADS);
-
     char *PORT_NUM = argv[1];
     struct addrinfo *info = getServerInfo(PORT_NUM);
     int socketDescriptor = createSocket(info);
@@ -260,6 +263,7 @@ int main(int argc, char **argv){
     printf("the server is up on port %s\n",PORT_NUM);
     
     while (1){
+        //block until the num of working threads < MAX_THREADS
         sem_wait(&workingThreadsSemaphore);
         int connection = acceptConnections(socketDescriptor);
         pthread_t thread;
