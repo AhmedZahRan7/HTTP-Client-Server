@@ -18,9 +18,10 @@
 #define MAX_LINE_SIZE 1000
 #define MAX_DATA_SIZE 10000000
 #define CONNECTION_TIMEOUT .2
-#define CLIENT_GET "GET"
-#define CLIENT_POST "POST"
+#define CLIENT_GET "get"
+#define CLIENT_POST "post"
 #define DEFAULT_PORT "80"
+#define OK_RESPONSE "HTTP/1.1 200 OK"
 
 // void* to return a pointer [like T]
 void* castToRightSocketAddress(struct sockaddr *address){
@@ -94,8 +95,13 @@ void sendString(char* response,int connection){
 }
 
 void sendFile(char* filePath,int connection){
-    FILE *fPtr = fopen(filePath, "rb");
-    if(fPtr == NULL) {printf("No such file %s\n",filePath);return;}
+    char path[100];
+    path[0] = '.';
+    path[1] = '\0';
+    strcat(path,filePath);
+    
+    FILE *fPtr = fopen(path, "rb");
+    if(fPtr == NULL) {printf("No such file %s\n",path);return;}
     fseek(fPtr, 0, SEEK_END);
     int fileLen = ftell(fPtr);
     rewind(fPtr);
@@ -108,7 +114,7 @@ void sendFile(char* filePath,int connection){
     }
     fclose(fPtr);
 }
-static void _mkdir(char *dir) {
+void _mkdir(char *dir) {
     /*http://nion.modprobe.de/blog/archives/357-Recursive-directory-creation.html*/
     char tmp[256];
     char *p = NULL;
@@ -123,7 +129,6 @@ static void _mkdir(char *dir) {
             mkdir(tmp, S_IRWXU);
             *p = '/';
         }
-    // mkdir(tmp, S_IRWXU);
 }
 
 void writeToFile(char* filePath,char* data,int len){
@@ -179,8 +184,10 @@ void parseLine(void* line){
     if(!(method = strtok((char*)line," "))) return;
     if(!(uri = strtok(NULL," "))) return;
     if(!(ip = strtok(NULL," "))) return;
-    if(!(port = strtok(NULL,"\n"))) port = DEFAULT_PORT;
-
+    if(!(port = strtok(NULL,"\n"))){
+        port = DEFAULT_PORT;
+        ip[strlen(ip)-1]='\0';
+    }
     int connection = connectToServer(ip,port);
     if(connection == -1) return;
 
@@ -189,25 +196,27 @@ void parseLine(void* line){
     if(strcmp(method,CLIENT_GET)==0) {
         strcat(request,"GET ");
         strcat(request,uri);
-        strcat(request," HTTP/1.1\n");
+        strcat(request," HTTP/1.1\r\n\r\n");
         sendString(request,connection);
-        sendString("\n",connection);
         char *buffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
         int len = receieveResponse(connection,buffer) ;
         for(int i=0;i<len;i++) printf("%c",buffer[i]);
-        writeToFile(uri,buffer,len);
+        char status[16];
+        memcpy(status,buffer,15);
+        status[15] = '\0';
+        if(strcmp(OK_RESPONSE,status) == 0) writeToFile(uri,buffer,len);
         free(buffer);
     }
     else if(strcmp(method,CLIENT_POST)==0){
         strcat(request,"POST ");
         strcat(request,uri);
-        strcat(request," HTTP/1.1\n");
+        strcat(request," HTTP/1.1\r\n\r\n");
         sendString(request,connection);
         sendFile(uri,connection);
         sendString("\n",connection);
         char *buffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
         int len = receieveResponse(connection,buffer);
-        if(len)printf("%s",buffer);
+        if(len) printf("%s",buffer);
         free(buffer);
     }
     else printf("%s not supported\n",method);

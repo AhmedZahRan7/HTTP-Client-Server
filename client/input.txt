@@ -1,3 +1,2 @@
-GET /images/branding/googlelogo/1x/googlelogo_light_color_272x92dp.png google.com
-GET /assets/images/mine.jpg localhost 5050
-GET /index.html localhost 5050
+post /assets/images/mine.jpg localhost 5050
+get /abcd localhost 5050

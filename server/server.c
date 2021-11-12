@@ -13,15 +13,40 @@
 #include <pthread.h>
 #include <poll.h>
 #include <ctype.h>
+#include <sys/stat.h>
+#include <semaphore.h>
 
+#define MAX_WORKING_THREADS 5
 #define MAX_WAITING_CONNECTIONS 5
-#define CONNECTION_TIMEOUT 1
-#define MAX_DATA_SIZE 1000
-#define MAX_FILE_SIZE 10000000
+#define MAX_DATA_SIZE 10000000
 #define OK_RESPONSE "HTTP/1.1 200 OK\r\n\r\n"
 #define FILE_NOT_FOUND_RESPONSE "HTTP/1.1 404 Not Found\r\n\r\n"
 #define METHOD_NOT_FOUND_RESPONSE "HTTP/1.1 405 Method Not Allowed\r\n\r\n"
+#define BASE_DIR "./base_dir"
+#define DEFAULT_HTML "/index.html"
+#define MAX_TIME_OUT 10 //in seconds
+sem_t workingThreadsSemaphore;
+pthread_mutex_t openConnectionMutex = PTHREAD_MUTEX_INITIALIZER;
 
+int numOfOpenConnections = 0;
+double connectionTimeout = MAX_TIME_OUT;
+
+void updateTimeOut(){
+    connectionTimeout = numOfOpenConnections? MAX_TIME_OUT/numOfOpenConnections : MAX_TIME_OUT;
+    printf("Currently handeling %d connections\nTimeout is %f seconds\n",numOfOpenConnections,connectionTimeout);
+}
+void increaseConnections(){
+    pthread_mutex_lock(&openConnectionMutex);
+    numOfOpenConnections++;
+    updateTimeOut();
+    pthread_mutex_unlock(&openConnectionMutex);
+}
+void decreaseConnections(){
+    pthread_mutex_lock(&openConnectionMutex);
+    numOfOpenConnections--;
+    updateTimeOut();
+    pthread_mutex_unlock(&openConnectionMutex);
+}
 int getValidDescriptor(struct addrinfo *results){
     int socketDescriptor;
     // loop through the linkedlist and get the first available descriptor
@@ -108,7 +133,10 @@ void sendStringToClient(char* response,int connection){
 
 void sendFileToClient(char* filePath,int connection){
     FILE *fPtr = fopen(filePath, "rb");
-    if(fPtr == NULL) sendStringToClient(FILE_NOT_FOUND_RESPONSE,connection);
+    if(fPtr == NULL) {
+        sendStringToClient(FILE_NOT_FOUND_RESPONSE,connection);
+        return;
+    }
     sendStringToClient(OK_RESPONSE,connection);
     fseek(fPtr, 0, SEEK_END);
     int fileLen = ftell(fPtr);
@@ -123,113 +151,97 @@ void sendFileToClient(char* filePath,int connection){
     fclose(fPtr);
 }
 
-void handleHTTPRequest(char* request,int connection){
-    printf("request is \" %s \"\n",request);
+void _mkdir(char *dir) {
+    /*http://nion.modprobe.de/blog/archives/357-Recursive-directory-creation.html*/
+    char tmp[256];
+    char *p = NULL;
+    size_t len;
+
+    snprintf(tmp, sizeof(tmp),"%s",dir);
+    len = strlen(tmp);
+    if (tmp[len - 1] == '/') tmp[len - 1] = 0;
+    for (p = tmp + 1; *p; p++)
+        if (*p == '/') {
+            *p = 0;
+            mkdir(tmp, S_IRWXU);
+            *p = '/';
+        }
+}
+
+void writeToFile(char* filePath,char* content,int len){
+    printf("len %d\n",len);
+    _mkdir(filePath);
+    FILE *fPtr = fopen(filePath, "wb");
+    char* begin = strstr(content,"\r\n\r\n");
+    int headerLen = begin-content;
+    for(int i=headerLen+4;i<len;i++) putc(content[i],fPtr);
+    fclose(fPtr);
+}
+
+void handleHTTPRequest(char* request,int len,int connection){
+    char *duplication = (char*) malloc(sizeof(char)*len);
+    printf("request is \n\"\n");
+    for(int i=0;i<len;i++) {
+        printf("%c",request[i]);
+        duplication[i] = request[i];
+    }
+    printf("\n\"\n");
     char *method,*uri,*version;
-    method = strtok(request," ");
+    method = strtok(duplication," ");
     uri = strtok(NULL," ");
     version = strtok(NULL,"\n");
+
     if(method == NULL || uri==NULL || version == NULL) {
         sendStringToClient(METHOD_NOT_FOUND_RESPONSE,connection);
         return;
     }
-    char baseURI[200] = "./welcome";
-    strcat(baseURI,uri);
-    if (strcmp(baseURI,"./welcome/") == 0) strcat(baseURI,"index.html");  
+
+    char baseURI[200] = BASE_DIR;
+    if(strcmp(uri,"/") ==0) strcat(baseURI,DEFAULT_HTML);
+    else strcat(baseURI,uri);
+
     if (strcmp(method,"GET") == 0 ) sendFileToClient(baseURI,connection);
-    else if (strcmp(method,"POST") == 0) sendStringToClient(OK_RESPONSE,connection);
+    else if (strcmp(method,"POST") == 0) {
+        sendStringToClient(OK_RESPONSE,connection);
+        writeToFile(baseURI,request,len);
+    }
     else sendStringToClient (METHOD_NOT_FOUND_RESPONSE,connection);
-}
-
-char* replace(char* s,char* old,char* new){
-    /*https://www.geeksforgeeks.org/c-program-replace-word-text-another-given-word/*/
-    char* result;
-    int i, cnt = 0;
-    int newlen = strlen(new);
-    int oldlen = strlen(old);
-
-    for (i = 0; s[i] != '\0'; i++) {
-        if (strstr(&s[i], old) == &s[i]) {
-            cnt++;
-              i += oldlen - 1;
-        }
-    }
-    result = (char*)malloc(i + cnt * (newlen - oldlen) + 1);
-    i = 0;
-    while (*s) {
-        if (strstr(s, old) == s) {
-            strcpy(&result[i], new);
-            i += newlen;
-            s += oldlen;
-        }
-        else result[i++] = *s++;
-    }
-    result[i] = '\0';
-    return result;
-}
-
-int isEmptyLine(char *line){
-    if(strlen(line) == 0) return 1;
-    for(int i=0;i<strlen(line);i++) if(!isspace(line[i])) return 0;
-    return 1;
-}
-
-int numOfEmptyLines(char *b){
-    char* buffer = replace(b,"\n"," \n");
-    int emptyLines = 0;
-    int lines = 0;
-    char * line;
-    line = strtok (buffer,"\n");
-    while (line != NULL) {
-        lines++;
-        if(isEmptyLine(line)) emptyLines++;
-        else emptyLines = 0;
-        line = strtok (NULL, "\n");
-    }
-
-    //return -1 if the whole buffer is empty 
-    return emptyLines==lines? -1 : emptyLines;
+    free(duplication);
 }
 
 void* handleConnection(void* connection){
+    increaseConnections();
     int connectionDescriptor = *(int*)connection;
     printf("handeling connection %d\n",connectionDescriptor);
     char* buffer = (char*) malloc(sizeof(char) * MAX_DATA_SIZE);
-    buffer[0] = '\0';
     int emptyLines = 0;
     //list of sockets to monitor events [only one socket in our case] 
     struct pollfd socketMonitor[1];
     socketMonitor[0].fd = connectionDescriptor;
     socketMonitor[0].events = POLLIN;
-
+    int len = 0;
     while(1){
         // poll if the socket had new event to handle or not.
-        int numOfEvents = poll(socketMonitor,1, CONNECTION_TIMEOUT*1000);
+        int numOfEvents = poll(socketMonitor,1, connectionTimeout*1000);
         if(numOfEvents == 0) break; // no more IN events happend during the timeout interval
         char *tempBuffer = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
         int receivedBytes = recv(connectionDescriptor,tempBuffer,MAX_DATA_SIZE,0);
         if(receivedBytes == 0) break; // the client closed the connection
         if(receivedBytes == -1){
             printf("Error when receiving from the client\n");
-            exit(1);
+            break;
         }
-        tempBuffer[receivedBytes] = '\0'; //end of file
-        strcat(buffer,tempBuffer);        
-        char *tempCopy = (char*)malloc(sizeof(char) * MAX_DATA_SIZE);
-        strcpy(tempCopy,buffer);
-        emptyLines = numOfEmptyLines(tempCopy);
-        if(emptyLines == -1) buffer[0] = '\0';
-        if(emptyLines >= 1) {
-            handleHTTPRequest(buffer,connectionDescriptor);
-            emptyLines = 0;
-            buffer[0] = '\0';
-        }
+        for(int i=0;i<receivedBytes;i++) buffer[len+i] = tempBuffer[i];
         free(tempBuffer);
-        free(tempCopy);
+        len += receivedBytes;
+        if(buffer[len-1] == '\n' && buffer[len-2] == '\r' && buffer[len-3] == '\n' && buffer[len-4] == '\r') break;
     }
+    handleHTTPRequest(buffer,len,connectionDescriptor);
     free(buffer);
     printf("Connection %d timeout\n",connectionDescriptor);
     close(connectionDescriptor);
+    sem_post(&workingThreadsSemaphore);
+    decreaseConnections();
 }
 
 int main(int argc, char **argv){
@@ -238,6 +250,8 @@ int main(int argc, char **argv){
         printf("Invalid num of arguments\n");
         exit(1);
     }
+    sem_init(&workingThreadsSemaphore,0,MAX_WORKING_THREADS);
+
     char *PORT_NUM = argv[1];
     struct addrinfo *info = getServerInfo(PORT_NUM);
     int socketDescriptor = createSocket(info);
@@ -246,6 +260,7 @@ int main(int argc, char **argv){
     printf("the server is up on port %s\n",PORT_NUM);
     
     while (1){
+        sem_wait(&workingThreadsSemaphore);
         int connection = acceptConnections(socketDescriptor);
         pthread_t thread;
         pthread_create(&thread, NULL, handleConnection, (void *)(&connection));
