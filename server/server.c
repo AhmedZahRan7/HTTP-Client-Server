@@ -183,11 +183,16 @@ void writeToFile(char* filePath,char* content,int len){
 }
 
 void handleHTTPRequest(char* request,int len,int connection){
+    int leadingSpaces = 0;
+    while(isspace(request[leadingSpaces])) {
+        leadingSpaces++;
+        if(leadingSpaces == len) return;
+    }
     char *duplication = (char*) malloc(sizeof(char)*len);
     printf("request is \n\"\n");
-    for(int i=0;i<len;i++) {
-        printf("%c",request[i]);
-        duplication[i] = request[i];
+    for(int i=0;i<len-leadingSpaces;i++) {
+        printf("%c",request[i+leadingSpaces]);
+        duplication[i] = request[i+leadingSpaces];
     }
     printf("\n\"\n");
     char *method,*uri,*version;
@@ -209,12 +214,16 @@ void handleHTTPRequest(char* request,int len,int connection){
     if (strcmp(method,"GET") == 0 ) sendFileToClient(baseURI,connection);
     else if (strcmp(method,"POST") == 0) {
         sendStringToClient(OK_RESPONSE,connection);
-        writeToFile(baseURI,request,len);
+        writeToFile(baseURI,request+leadingSpaces,len-leadingSpaces);
     }
     else sendStringToClient (METHOD_NOT_FOUND_RESPONSE,connection);
     free(duplication);
 }
 
+int isEmptyString(char* line,int len){
+    for(int i=0;i<len;i++) if(!isspace(line[i])) return 0;
+    return 1;
+}
 void* handleConnection(void* connection){
     increaseConnections();
     int connectionDescriptor = *(int*)connection;
@@ -232,15 +241,22 @@ void* handleConnection(void* connection){
         int numOfEvents = poll(socketMonitor,1, connectionTimeout*1000);
         if(numOfEvents == 0) break; // no more IN events happend during the timeout interval
         int receivedBytes = recv(connectionDescriptor,buffer+len,MAX_DATA_SIZE-len,0);
-        if(receivedBytes == 0) break; // the client closed the connection
         if(receivedBytes == -1){
             printf("Error when receiving from the client\n");
-            break;
+            free(buffer);
+            close(connectionDescriptor);
+            decreaseConnections();
+            sem_post(&workingThreadsSemaphore);
+            return NULL;
         }
+        if(receivedBytes == 0) break; // the client closed the connection
         len += receivedBytes;
-        if(buffer[len-1] == '\n' && buffer[len-2] == '\r' && buffer[len-3] == '\n' && buffer[len-4] == '\r') break;
+        if(!isEmptyString(buffer,len) && len >= 4 && buffer[len-1] == '\n' && buffer[len-2] == '\r' && buffer[len-3] == '\n' && buffer[len-4] == '\r') {
+            handleHTTPRequest(buffer,len,connectionDescriptor);
+            len=0;
+        }
     }
-    handleHTTPRequest(buffer,len,connectionDescriptor);
+    if(len != 0) handleHTTPRequest(buffer,len,connectionDescriptor);
     free(buffer);
     printf("Connection %d timeout\n",connectionDescriptor);
     close(connectionDescriptor);

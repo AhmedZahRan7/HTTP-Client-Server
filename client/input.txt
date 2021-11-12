@@ -1,2 +1,1 @@
-post /assets/images/mine.jpg localhost 5050
-get /abcd localhost 5050
+get /index.html google.com 80
